@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -48,12 +49,16 @@ local defaultSettings = {
     mobileButtonPosY = 120,
     textScale = 0.9,
     keybinds = {},
+    packetLaggerEnabled = false,
+    packetPower = 100,
 }
 
 local settings = {}
 for key, value in pairs(defaultSettings) do
     settings[key] = value
 end
+
+local packetState = {}
 
 local function clamp(value, minValue, maxValue)
     return math.max(minValue, math.min(maxValue, value))
@@ -80,6 +85,66 @@ local function loadConfig()
             for key, value in pairs(defaultSettings) do
                 if decoded[key] ~= nil then
                     settings[key] = decoded[key]
+                end
+            end
+        end
+    end
+end
+
+local function applyPacketLagger()
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+    if settings.packetLaggerEnabled then
+        local power = clamp(settings.packetPower or 0, 0, 500)
+        local speedBoost = 1 + (power / 100) * 1.35
+        local jumpBoost = 1 + (power / 100) * 0.6
+
+        if humanoid then
+            humanoid.WalkSpeed = clamp((settings.normalSpeed or 100) * speedBoost, 16, 500)
+            humanoid.JumpPower = math.max(50, (humanoid.JumpPower or 50) * jumpBoost)
+        end
+
+        for _, otherPlayer in ipairs(Players:GetPlayers()) do
+            if otherPlayer ~= player then
+                local otherChar = otherPlayer.Character
+                if otherChar then
+                    local otherHum = otherChar:FindFirstChildOfClass("Humanoid")
+                    if otherHum then
+                        local key = otherPlayer.UserId
+                        if packetState[key] == nil then
+                            packetState[key] = {
+                                walk = otherHum.WalkSpeed,
+                                jump = otherHum.JumpPower,
+                            }
+                        end
+
+                        local lagFactor = 1 - ((power / 500) * 0.9)
+                        otherHum.WalkSpeed = math.max(16, packetState[key].walk * lagFactor)
+                        otherHum.JumpPower = math.max(25, packetState[key].jump * (1 - (power / 1000)))
+                    end
+                end
+            end
+        end
+    else
+        if humanoid then
+            humanoid.WalkSpeed = clamp(settings.normalSpeed or 100, 16, 500)
+        end
+
+        for _, otherPlayer in ipairs(Players:GetPlayers()) do
+            if otherPlayer ~= player then
+                local key = otherPlayer.UserId
+                local targetState = packetState[key]
+                if targetState then
+                    local otherChar = otherPlayer.Character
+                    if otherChar then
+                        local otherHum = otherChar:FindFirstChildOfClass("Humanoid")
+                        if otherHum then
+                            otherHum.WalkSpeed = targetState.walk
+                            otherHum.JumpPower = targetState.jump
+                        end
+                    end
+                    packetState[key] = nil
                 end
             end
         end
@@ -205,6 +270,9 @@ local function createToggle(parent, labelText, settingName)
         toggle.Text = settings[settingName] and "ON" or "OFF"
         toggle.BackgroundColor3 = settings[settingName] and Color3.fromRGB(90, 255, 140) or Color3.fromRGB(255, 85, 85)
         saveConfig()
+        if settingName == "packetLaggerEnabled" then
+            applyPacketLagger()
+        end
     end)
 
     return row
@@ -255,6 +323,9 @@ local function createNumberInput(parent, labelText, settingName, minValue, maxVa
         settings[settingName] = value
         box.Text = tostring(value)
         saveConfig()
+        if settingName == "packetPower" then
+            applyPacketLagger()
+        end
     end)
 
     return row
@@ -496,6 +567,24 @@ local function createGui()
     end
 
     do
+        local section = addSection(mainPage, "Packet Lagger")
+        section.Size = UDim2.new(1, -8, 0, 110)
+
+        local wrap = Instance.new("Frame")
+        wrap.Size = UDim2.new(1, -16, 1, -16)
+        wrap.Position = UDim2.new(0, 8, 0, 8)
+        wrap.BackgroundTransparency = 1
+        wrap.Parent = section
+
+        local layout = Instance.new("UIListLayout")
+        layout.Padding = UDim.new(0, 8)
+        layout.Parent = wrap
+
+        createNumberInput(wrap, "Power", "packetPower", 0, 500)
+        createToggle(wrap, "Activate Packet Lagger", "packetLaggerEnabled")
+    end
+
+    do
         local section = addSection(mainPage, "Speed")
         section.Size = UDim2.new(1, -8, 0, 150)
 
@@ -625,6 +714,7 @@ local function createGui()
                 settings[key] = value
             end
             saveConfig()
+            applyPacketLagger()
         end)
 
         local themeRow = Instance.new("Frame")
@@ -773,6 +863,7 @@ local function createGui()
 
         mobilePanel.Position = UDim2.new(1, -(settings.buttonSize * 2 + 24), 0, settings.mobileButtonPosY)
         rebuildMobileButtons()
+        applyPacketLagger()
     end
 
     refresh()
@@ -787,6 +878,24 @@ end
 loadConfig()
 setTheme(settings.theme)
 local gui = createGui()
+
+player.CharacterAdded:Connect(function()
+    task.wait(0.2)
+    applyPacketLagger()
+end)
+
+Players.PlayerAdded:Connect(function(otherPlayer)
+    if settings.packetLaggerEnabled then
+        task.wait(0.2)
+        applyPacketLagger()
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if settings.packetLaggerEnabled then
+        applyPacketLagger()
+    end
+end)
 
 player:GetAttributeChangedSignal(configKey):Connect(function()
     if gui and gui.refresh then
